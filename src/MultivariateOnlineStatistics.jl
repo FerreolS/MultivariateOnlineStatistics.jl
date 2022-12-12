@@ -16,6 +16,7 @@ export
     var
 
 using Base: @propagate_inbounds, OneTo
+using StructuredArrays
 
 using Statistics
 import Statistics: mean, std, var
@@ -108,14 +109,14 @@ The following basic methods are also applicable to an instance of
 mutable struct IndependentStatistics{L,T<:AbstractFloat,N,
                                      A<:AbstractArray{T,N}}
     s::NTuple{L,A} # collected statistical moments
-    n::Int         # number of samples
+    n::AbstractArray{Int,N}         # number of samples
     function IndependentStatistics{L,T,N,A}(
         s::NTuple{L,A},
-        n::Integer) where {T<:AbstractFloat,N,L,
+        n::AbstractArray{Int,N} ) where {T<:AbstractFloat,N,L,
                            A<:AbstractArray{T,N}}
         have_same_axes(s...) ||
             dimension_mismatch("storage arrays have different indices")
-        n ≥ 0 || throw(ArgumentError("bad number of samples"))
+        all(n .≥ 0) || throw(ArgumentError("bad number of samples"))
         return new{L,T,N,A}(s, n)
     end
 end
@@ -125,6 +126,14 @@ end
 function IndependentStatistics{L,T,N,A}(
     s::NTuple{L,A}) where {T<:AbstractFloat,N,L,A<:AbstractArray{T,N}}
     empty!(IndependentStatistics{L,T,N,A}(s, 0))
+end
+
+# When number of samples is constant, fill after
+# building with the inner constructor (to check correctness of arguments).
+function IndependentStatistics{L,T,N,A}(
+    s::NTuple{L,A},n::Integer) where {T<:AbstractFloat,N,L,A<:AbstractArray{T,N}}
+    nb = FastUniformArray(to_int(n), size(s[1]))
+    IndependentStatistics{L,T,N,A}(s, nb)
 end
 
 # For basic constructors, just provide the missing type parameters and call one
@@ -202,9 +211,8 @@ arrays used by `A`.
 
 """
 @inline function checked_axes(A::IndependentStatistics{L}) where {L}
-    A.n ≥ 0 || throw_bad_number_of_samples()
-    I = axes(storage(A, 1))
-    L < 2 || all_match(I, axes, storage(A, 2:L)...) ||
+    I = axes(A.n)
+    L < 2 || all_match(I, axes, storage(A, 1:L)...) ||
         throw_bad_storage_indices()
     return I
 end
@@ -213,7 +221,7 @@ function Base.empty!(A::IndependentStatistics{L,T}) where {L,T}
     for s in storage(A)
         fill!(s, zero(eltype(s)))
     end
-    A.n = 0
+    A.n = FastUniformArray(0, size(A))
     return A
 end
 
@@ -231,6 +239,12 @@ std(A::IndependentStatistics{L,T,N}; kwds...) where {L,T,N} =
 # calling statistics method with an iterator.  NOTE: `getindex` and
 # `checkbounds` methods may be called with a linear index (an `Integer`), a
 # `CartesianIndex`, or a tuple of Cartesian indices.
+
+@inline @propagate_inbounds function nobs(A::IndependentStatistics,
+                                          i::Tuple{Vararg{Integer}})
+    return getindex(nobs(A), i...)
+end
+
 @inline @propagate_inbounds function mean(A::IndependentStatistics,
                                           i::Union{Integer,CartesianIndex})
     return getindex(mean(A), i)
@@ -279,22 +293,10 @@ function _mapvar!(f, dst::AbstractArray{<:AbstractFloat,N},
     axes(dst) == axes(s2) ||
         dimension_mismatch("destination has incompatible indices")
     n = nobs(A)
-    n ≥ 0 || throw_bad_number_of_samples()
-    if corrected
-        n > 1 || error("not enough samples")
-        n -= 1
-    end
-    if n > 1
-        a = one(T)/n
-        @inbounds @simd for i in eachindex(dst, s2)
-            dst[i] = f(a*s2[i])
-        end
-    elseif n == 1
-        @inbounds @simd for i in eachindex(dst, s2)
-            dst[i] = f(s2[i])
-        end
-    else
-        fill!(dst, f(zero(eltype(dst))))
+#    n ≥ 0 || throw_bad_number_of_samples()
+    @inbounds @simd for i in eachindex(dst, s2)
+        a =  one(T) / ifelse(corrected, n[i] - 1, n[i])
+        dst[i] = f(a*s2[i])
     end
     return dst
 end
@@ -306,7 +308,7 @@ end
     S2 = storage(A, 2)
     @boundscheck checkbounds(S2, i1, inds...)
     @inbounds s2 = getindex(S2, i1, inds...)
-    n = nobs(A)
+    n = nobs(A,i1)
     return f(s2/ifelse(corrected, n - 1, n))
 end
 
