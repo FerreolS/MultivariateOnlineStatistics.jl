@@ -132,7 +132,7 @@ end
 # building with the inner constructor (to check correctness of arguments).
 function IndependentStatistics{L,T,N,A}(
     s::NTuple{L,A},n::Integer) where {T<:AbstractFloat,N,L,A<:AbstractArray{T,N}}
-    nb = FastUniformArray(to_int(n), size(s[1]))
+    nb = MutableUniformArray(to_int(n), size(s[1]))
     IndependentStatistics{L,T,N,A}(s, nb)
 end
 
@@ -221,7 +221,7 @@ function Base.empty!(A::IndependentStatistics{L,T}) where {L,T}
     for s in storage(A)
         fill!(s, zero(eltype(s)))
     end
-    A.n = FastUniformArray(0, size(A))
+    A.val = 0
     return A
 end
 
@@ -316,13 +316,13 @@ function Base.push!(A::IndependentStatistics{L,T,N},
                     x::AbstractArray{<:Real,N}) where {L,T<:AbstractFloat,N}
     axes(x) == checked_axes(A) ||
         dimension_mismatch("data sample has incompatible indices")
-    return unsafe_push!(A, x)
+    return unsafe_push!(Val(typeof(A.n)),A, x)
 end
 
 # Push without checking arguments.
-function unsafe_push!(A::IndependentStatistics{L,T,N},
+function unsafe_push!(::Val{MutableUniformArray{Int64,N}},A::IndependentStatistics{L,T,N},
                       x::AbstractArray{<:Real,N}) where {L,T<:AbstractFloat,N}
-    n = A.n
+    n = A.n.val
     if n == 0
         # No data have yet been collected by A.
         s1 = storage(A, 1)
@@ -350,7 +350,7 @@ function unsafe_push!(A::IndependentStatistics{L,T,N},
     else
         error("statistical moments of order higher than 2 not yet implemented")
     end
-    A.n += 1
+    A.n.val += 1
     return A
 end
 
@@ -381,7 +381,7 @@ function Base.merge!(A::IndependentStatistics, itr)
     for x in itr
         axes(x) == I ||
             dimension_mismatch("data sample has incompatible indices")
-        unsafe_push!(A, x)
+        unsafe_push!(Val(typeof(A.n)),A, x)
     end
     return A
 end
@@ -398,7 +398,7 @@ function Base.merge!(A::IndependentStatistics{L,<:AbstractFloat,N},
     elseif B.n == 1
         # A single sample has been collected by B, it is sufficient to push it
         # into A.
-        unsafe_push!(A, storage(B, 1))
+        unsafe_push!(Val(typeof(A.n)),A, storage(B, 1))
     else
         # Some samples have been integrated in A and B.
         _merge!(A, B)
